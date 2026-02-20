@@ -11,13 +11,7 @@
 
 </div>
 
-<br/>
 
-<div align="center">
-  <img src="./Assets/screenshot.png" alt="VPT Screenshot" width="800" />
-</div>
-
-<br/>
 
 ---
 
@@ -287,3 +281,4 @@ VPT-main/
 VPT - Video Processing Toolkit
 
 </div>
+
