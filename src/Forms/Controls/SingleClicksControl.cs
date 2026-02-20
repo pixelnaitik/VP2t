@@ -7,6 +7,7 @@ using System.Drawing.Imaging;
 using System.Globalization;
 using System.IO;
 using System.Linq;
+using System.Reflection;
 using System.Threading.Tasks;
 using System.Windows.Forms;
 using VPT.Core;
@@ -26,6 +27,8 @@ namespace VPT.Forms.Controls
 
         // --- Preview & Timeline UI -------------------------------------------
         private PictureBox previewBox = null!;
+        private Label uploadHintLabel = null!;
+        private Button timelinePlayBtn = null!;
         private Label fileInfoLabel = null!;
         private Panel timelinePanel = null!;
         private Label timelineStartLabel = null!;
@@ -43,6 +46,9 @@ namespace VPT.Forms.Controls
         private List<string> _batchFiles = new();
         private readonly VideoProcessingService _videoService;
         private readonly Form _parentForm;
+        private readonly System.Windows.Forms.Timer _playbackTimer = new() { Interval = 250 };
+        private WindowsMediaPlayerHost? _videoPlayer;
+        private bool _isPlaying;
 
         // Button lists
         private List<Button> rotationButtons = new();
@@ -60,6 +66,16 @@ namespace VPT.Forms.Controls
             this.ForeColor = Theme.Fg;
 
             InitializeComponent();
+            _playbackTimer.Tick += (_, __) => UpdatePlaybackUi();
+        }
+
+
+
+        private sealed class WindowsMediaPlayerHost : AxHost
+        {
+            public WindowsMediaPlayerHost() : base("6BF52A52-394A-11d3-B153-00C04F79FAA6") { }
+
+            public object? Ocx => GetOcx();
         }
 
         private void InitializeComponent()
@@ -96,7 +112,7 @@ namespace VPT.Forms.Controls
                 Cursor = Cursors.Hand
             };
 
-            var dropLabel = new Label
+            uploadHintLabel = new Label
             {
                 Dock = DockStyle.Fill,
                 ForeColor = Theme.Muted,
@@ -106,9 +122,21 @@ namespace VPT.Forms.Controls
                 Text = "📂  Click to Upload\nor Drag & Drop",
                 Cursor = Cursors.Hand
             };
-            previewBox.Controls.Add(dropLabel);
+            previewBox.Controls.Add(uploadHintLabel);
+
+            _videoPlayer = new WindowsMediaPlayerHost
+            {
+                Dock = DockStyle.Fill,
+                Enabled = true,
+                Visible = false
+            };
+            _videoPlayer.CreateControl();
+
             leftDropArea.Controls.Add(previewBox);
+            if (_videoPlayer != null) leftDropArea.Controls.Add(_videoPlayer);
             leftDropArea.AllowDrop = true;
+
+            ConfigureVideoPlayer();
 
             // Click handlers
             Action openFileAction = () =>
@@ -126,14 +154,14 @@ namespace VPT.Forms.Controls
                         if (!_batchFiles.Contains(file))
                             _batchFiles.Add(file);
                     }
-                    LoadVideoFile(ofd.FileNames[0], dropLabel);
+                    LoadVideoFile(ofd.FileNames[0]);
                     UpdateBatchInfo();
                 }
             };
 
-            previewBox.Click += (s, e) => openFileAction();
-            dropLabel.Click += (s, e) => openFileAction();
-            leftDropArea.Click += (s, e) => openFileAction();
+            previewBox.Click += (s, e) => { if (_pendingInputFile == null) openFileAction(); };
+            uploadHintLabel.Click += (s, e) => openFileAction();
+            leftDropArea.Click += (s, e) => { if (_pendingInputFile == null) openFileAction(); };
 
             // Drag handlers
             leftDropArea.DragEnter += (s, e) => { if (e.Data?.GetDataPresent(DataFormats.FileDrop) == true) e.Effect = DragDropEffects.Copy; };
@@ -146,7 +174,7 @@ namespace VPT.Forms.Controls
                         if (!_batchFiles.Contains(file))
                             _batchFiles.Add(file);
                     }
-                    LoadVideoFile(files[0], dropLabel);
+                    LoadVideoFile(files[0]);
                     UpdateBatchInfo();
                 }
             };
@@ -156,6 +184,24 @@ namespace VPT.Forms.Controls
             // Timeline
             timelinePanel = new Panel { Dock = DockStyle.Fill, BackColor = Color.FromArgb(18, 22, 30), Padding = new Padding(12, 10, 12, 10) };
 
+            timelinePlayBtn = new Button
+            {
+                Text = "\u25B6",
+                Size = new Size(24, 24),
+                Location = new Point(12, 12),
+                FlatStyle = FlatStyle.Flat,
+                ForeColor = Color.White,
+                BackColor = Color.Transparent,
+                Font = new Font("Segoe UI Symbol", 11, FontStyle.Regular),
+                Cursor = Cursors.Hand
+            };
+            timelinePlayBtn.FlatAppearance.BorderSize = 0;
+            timelinePlayBtn.FlatAppearance.MouseOverBackColor = Color.FromArgb(40, 255, 255, 255);
+            timelinePlayBtn.FlatAppearance.MouseDownBackColor = Color.FromArgb(60, 255, 255, 255);
+            timelinePlayBtn.Click += (s, e) => TogglePlayback();
+            timelinePanel.Controls.Add(timelinePlayBtn);
+            UiUtils.ApplyRounded(timelinePlayBtn, 12);
+
             timelineStartLabel = new Label
             {
                 Text = "0:00",
@@ -163,7 +209,7 @@ namespace VPT.Forms.Controls
                 BackColor = Color.Transparent,
                 Font = new Font("Segoe UI", 9, FontStyle.Regular),
                 AutoSize = true,
-                Location = new Point(12, 16)
+                Location = new Point(44, 16)
             };
             timelinePanel.Controls.Add(timelineStartLabel);
 
@@ -195,11 +241,30 @@ namespace VPT.Forms.Controls
             timelineTrack.Controls.Add(timelineProgress);
             timelinePanel.Controls.Add(timelineTrack);
 
+            bool isDraggingTimeline = false;
+            Action<MouseEventArgs, Panel> handleTimelineMouse = (e, panel) =>
+            {
+                if (!isDraggingTimeline) return;
+                int x = e.X;
+                if (panel == timelineProgress) x += timelineProgress.Left;
+                double pct = Math.Max(0, Math.Min(1.0, (double)x / timelineTrack.Width));
+                SeekVideo(pct);
+            };
+
+            timelineTrack.MouseDown += (s, e) => { isDraggingTimeline = true; handleTimelineMouse(e, timelineTrack); };
+            timelineTrack.MouseMove += (s, e) => handleTimelineMouse(e, timelineTrack);
+            timelineTrack.MouseUp += (s, e) => isDraggingTimeline = false;
+
+            timelineProgress.MouseDown += (s, e) => { isDraggingTimeline = true; handleTimelineMouse(e, timelineProgress); };
+            timelineProgress.MouseMove += (s, e) => handleTimelineMouse(e, timelineProgress);
+            timelineProgress.MouseUp += (s, e) => isDraggingTimeline = false;
+
             timelinePanel.Resize += (s, e) =>
             {
-                int margin = 52;
-                timelineTrack.Location = new Point(margin, 18);
-                timelineTrack.Width = Math.Max(10, timelinePanel.Width - margin * 2);
+                int leftMargin = 84;
+                int rightMargin = 52;
+                timelineTrack.Location = new Point(leftMargin, 18);
+                timelineTrack.Width = Math.Max(10, timelinePanel.Width - leftMargin - rightMargin);
                 timelineEndLabel.Location = new Point(timelinePanel.Width - timelineEndLabel.Width - 12, 16);
                 UiUtils.ApplyRounded(timelineTrack, 3);
                 UiUtils.ApplyRounded(timelineProgress, 3);
@@ -372,11 +437,13 @@ namespace VPT.Forms.Controls
             ClearBatchQueue();
         }
 
-        private void LoadVideoFile(string filePath, Label dropLabel)
+        private void LoadVideoFile(string filePath, bool notifyVideoLoaded = true)
         {
             _pendingInputFile = filePath;
-            VideoLoaded?.Invoke(filePath);
-            dropLabel.Visible = false;
+            if (notifyVideoLoaded) VideoLoaded?.Invoke(filePath);
+            uploadHintLabel.Visible = false;
+            ShowPlayerSurface(true);
+            PlayVideo(filePath);
 
             Task.Run(() =>
             {
@@ -437,7 +504,9 @@ namespace VPT.Forms.Controls
 
                         timelineStartLabel.Text = "0:00";
                         timelineEndLabel.Text = durationStr;
-                        timelineProgress.Width = timelineTrack.Width;
+                        timelineProgress.Width = 0;
+                        _isPlaying = true;
+                        if (timelinePlayBtn != null) timelinePlayBtn.Text = "\u23F8";
                     }));
                 }
                 catch (Exception)
@@ -445,6 +514,153 @@ namespace VPT.Forms.Controls
                     this.Invoke((Action)(() => fileInfoLabel.Text = $"📄 {Path.GetFileName(filePath)}"));
                 }
             });
+        }
+
+        private void ConfigureVideoPlayer()
+        {
+            if (_videoPlayer?.Ocx is not object ocx) return;
+
+            try
+            {
+                SetComProperty(ocx, "uiMode", "none");
+                SetComProperty(ocx, "stretchToFit", true);
+
+                var settings = GetComProperty(ocx, "settings");
+                if (settings != null)
+                {
+                    SetComProperty(settings, "autoStart", false);
+                    SetComProperty(settings, "volume", 100);
+                }
+            }
+            catch (Exception ex)
+            {
+                Logger.Error("Failed to initialize embedded video player", ex);
+            }
+        }
+
+        private void ShowPlayerSurface(bool show)
+        {
+            previewBox.Visible = !show;
+            if (_videoPlayer != null)
+            {
+                _videoPlayer.Visible = show;
+                if (show) _videoPlayer.BringToFront();
+            }
+        }
+
+        private void PlayVideo(string filePath)
+        {
+            if (_videoPlayer?.Ocx is not object ocx) return;
+
+            try
+            {
+                SetComProperty(ocx, "uiMode", "none");
+                SetComProperty(ocx, "URL", filePath);
+                var controls = GetComProperty(ocx, "controls");
+                InvokeComMethod(controls, "play");
+                _isPlaying = true;
+                if (timelinePlayBtn != null) timelinePlayBtn.Text = "\u23F8";
+                _playbackTimer.Start();
+            }
+            catch (Exception ex)
+            {
+                Logger.Error("Failed to play uploaded video", ex);
+            }
+        }
+
+        private void TogglePlayback()
+        {
+            if (_videoPlayer?.Ocx is not object ocx || string.IsNullOrWhiteSpace(_pendingInputFile)) return;
+
+            try
+            {
+                var controls = GetComProperty(ocx, "controls");
+                if (_isPlaying)
+                {
+                    InvokeComMethod(controls, "pause");
+                    _isPlaying = false;
+                    if (timelinePlayBtn != null) timelinePlayBtn.Text = "\u25B6";
+                }
+                else
+                {
+                    InvokeComMethod(controls, "play");
+                    _isPlaying = true;
+                    if (timelinePlayBtn != null) timelinePlayBtn.Text = "\u23F8";
+                    _playbackTimer.Start();
+                }
+            }
+            catch (Exception ex)
+            {
+                Logger.Error("Failed to toggle video playback", ex);
+            }
+        }
+
+        private void UpdatePlaybackUi()
+        {
+            if (!_isPlaying)
+            {
+                _playbackTimer.Stop();
+                return;
+            }
+
+            if (timelineTrack.Width <= 0 || _videoDuration <= 0) return;
+            double current = GetCurrentPositionSeconds();
+            current = Math.Max(0, Math.Min(_videoDuration, current));
+
+            timelineStartLabel.Text = UiUtils.FormatDuration(current);
+            timelineProgress.Width = (int)Math.Round((current / _videoDuration) * timelineTrack.Width);
+        }
+
+        private void SeekVideo(double percentage)
+        {
+            if (_videoPlayer?.Ocx is not object ocx || _videoDuration <= 0) return;
+            try
+            {
+                var controls = GetComProperty(ocx, "controls");
+                if (controls != null)
+                {
+                    double newTime = Math.Max(0, Math.Min(_videoDuration, _videoDuration * percentage));
+                    SetComProperty(controls, "currentPosition", newTime);
+                    UpdatePlaybackUi();
+                }
+            }
+            catch (Exception ex)
+            {
+                Logger.Error("Failed to seek video", ex);
+            }
+        }
+
+        private double GetCurrentPositionSeconds()
+        {
+            if (_videoPlayer?.Ocx is not object ocx) return 0;
+            try
+            {
+                var controls = GetComProperty(ocx, "controls");
+                object? pos = GetComProperty(controls, "currentPosition");
+                if (pos == null) return 0;
+                return Convert.ToDouble(pos, CultureInfo.InvariantCulture);
+            }
+            catch
+            {
+                return 0;
+            }
+        }
+
+        private static object? GetComProperty(object? target, string propertyName)
+        {
+            if (target == null) return null;
+            return target.GetType().InvokeMember(propertyName, BindingFlags.GetProperty, null, target, null);
+        }
+
+        private static void SetComProperty(object target, string propertyName, object? value)
+        {
+            target.GetType().InvokeMember(propertyName, BindingFlags.SetProperty, null, target, new[] { value });
+        }
+
+        private static void InvokeComMethod(object? target, string methodName)
+        {
+            if (target == null) return;
+            target.GetType().InvokeMember(methodName, BindingFlags.InvokeMethod, null, target, null);
         }
 
         private void UpdateBatchInfo()
@@ -461,7 +677,18 @@ namespace VPT.Forms.Controls
             previewBox.Image = null;
             _originalThumbnail?.Dispose();
             _originalThumbnail = null;
-            foreach (Control c in previewBox.Controls) if (c is Label lbl) lbl.Visible = true;
+            uploadHintLabel.Visible = true;
+            ShowPlayerSurface(false);
+            _isPlaying = false;
+            if (timelinePlayBtn != null) timelinePlayBtn.Text = "\u25B6";
+            _playbackTimer.Stop();
+            try
+            {
+                var controls = GetComProperty(_videoPlayer?.Ocx, "controls");
+                InvokeComMethod(controls, "stop");
+                if (_videoPlayer?.Ocx is object ocx) SetComProperty(ocx, "URL", string.Empty);
+            }
+            catch { }
             fileInfoLabel.Text = "No file loaded (supports multiple files)";
             timelineProgress.Width = 0;
             timelineStartLabel.Text = "0:00";
@@ -778,87 +1005,7 @@ namespace VPT.Forms.Controls
         }
         public void LoadVideo(string filePath, bool silent = false)
         {
-            _pendingInputFile = filePath;
-            // Hide drop label if found
-            foreach (Control c in previewBox.Controls)
-            {
-                if (c is Label l && l.Text.Contains("Click to Upload")) l.Visible = false;
-            }
-
-            // Re-use logic from LoadVideoFile but without firing event to avoid feedback loop if needed,
-            // or just fire it (Form1 suppresses loop).
-            // Actually, we usually want to fire it if loaded programmatically too?
-            // But if it comes from Sync, we don't need to fire back.
-            // Let's fire it, and Form1 handles the loop.
-            if (!silent) VideoLoaded?.Invoke(filePath);
-
-            Task.Run(() =>
-            {
-                try
-                {
-                    string ffmpegPath = _videoService.ExtractFfmpegTool("ffmpeg.exe");
-                    string ffprobePath = _videoService.ExtractFfmpegTool("ffprobe.exe");
-                    string thumbPath = Path.Combine(Path.GetTempPath(), $"vpt_thumb_{Guid.NewGuid()}.jpg");
-
-                    var probeInfo = new ProcessStartInfo
-                    {
-                        FileName = ffprobePath,
-                        Arguments = $"-v error -show_entries format=duration -of default=noprint_wrappers=1:nokey=1 \"{filePath}\"",
-                        UseShellExecute = false,
-                        RedirectStandardOutput = true,
-                        CreateNoWindow = true
-                    };
-
-                    double duration = 0;
-                    using (var probe = Process.Start(probeInfo))
-                    {
-                        if (probe != null)
-                        {
-                            string output = probe.StandardOutput.ReadToEnd().Trim();
-                            probe.WaitForExit();
-                            double.TryParse(output, NumberStyles.Float, CultureInfo.InvariantCulture, out duration);
-                        }
-                    }
-
-                    double thumbTime = Math.Min(1, duration * 0.1);
-                    var thumbInfo = new ProcessStartInfo
-                    {
-                        FileName = ffmpegPath,
-                        Arguments = $"-y -ss {thumbTime.ToString("0.###", CultureInfo.InvariantCulture)} -i \"{filePath}\" -vframes 1 -q:v 2 \"{thumbPath}\"",
-                        UseShellExecute = false,
-                        CreateNoWindow = true
-                    };
-
-                    using (var p = Process.Start(thumbInfo)) p?.WaitForExit();
-
-                    this.Invoke((Action)(() =>
-                    {
-                        if (File.Exists(thumbPath))
-                        {
-                            using var fs = new FileStream(thumbPath, FileMode.Open, FileAccess.Read);
-                            using var tempImage = Image.FromStream(fs);
-                            previewBox.Image?.Dispose();
-                            _originalThumbnail?.Dispose();
-                            _originalThumbnail = new Bitmap(tempImage);
-                            previewBox.Image = new Bitmap(_originalThumbnail);
-                            try { File.Delete(thumbPath); } catch (Exception ex) { Logger.Error("Failed to delete generated thumbnail", ex); }
-                        }
-
-                        _videoDuration = duration;
-                        string fileName = Path.GetFileName(filePath);
-                        string durationStr = UiUtils.FormatDuration(duration);
-                        fileInfoLabel.Text = $"📄 {fileName}  •  ⏱ {durationStr}";
-
-                        timelineStartLabel.Text = "0:00";
-                        timelineEndLabel.Text = durationStr;
-                        timelineProgress.Width = timelineTrack.Width;
-                    }));
-                }
-                catch (Exception)
-                {
-                    this.Invoke((Action)(() => fileInfoLabel.Text = $"📄 {Path.GetFileName(filePath)}"));
-                }
-            });
+            LoadVideoFile(filePath, notifyVideoLoaded: !silent);
         }
     }
 }

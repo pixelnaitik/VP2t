@@ -101,19 +101,19 @@ namespace VPT.Forms
             };
             titleBar.Controls.Add(titleLabel);
 
-            // Window Controls
-            var closeBtn = new Button
+            // Window Controls (left-to-right: Minimize, Maximize, Close)
+            var minBtn = new Button
             {
-                Text = "✕",
+                Text = "─",
                 ForeColor = Theme.Muted,
                 FlatStyle = FlatStyle.Flat,
-                FlatAppearance = { BorderSize = 0, MouseOverBackColor = Color.FromArgb(232, 17, 35) },
+                FlatAppearance = { BorderSize = 0, MouseOverBackColor = Theme.CardBgHover },
                 Size = new Size(46, 40),
                 Dock = DockStyle.Right,
                 Cursor = Cursors.Hand
             };
-            closeBtn.Click += (s, e) => Application.Exit();
-            titleBar.Controls.Add(closeBtn);
+            minBtn.Click += (s, e) => this.WindowState = FormWindowState.Minimized;
+            titleBar.Controls.Add(minBtn);
 
             var maxBtn = new Button
             {
@@ -128,31 +128,18 @@ namespace VPT.Forms
             maxBtn.Click += (s, e) => ToggleMaximize(maxBtn);
             titleBar.Controls.Add(maxBtn);
 
-            var minBtn = new Button
+            var closeBtn = new Button
             {
-                Text = "─",
+                Text = "✕",
                 ForeColor = Theme.Muted,
                 FlatStyle = FlatStyle.Flat,
-                FlatAppearance = { BorderSize = 0, MouseOverBackColor = Theme.CardBgHover },
+                FlatAppearance = { BorderSize = 0, MouseOverBackColor = Color.FromArgb(232, 17, 35) },
                 Size = new Size(46, 40),
                 Dock = DockStyle.Right,
                 Cursor = Cursors.Hand
             };
-            minBtn.Click += (s, e) => this.WindowState = FormWindowState.Minimized;
-            titleBar.Controls.Add(minBtn);
-
-            var settingsBtn = new Button
-            {
-                Text = "⚙",
-                ForeColor = Theme.Muted,
-                FlatStyle = FlatStyle.Flat,
-                FlatAppearance = { BorderSize = 0, MouseOverBackColor = Theme.CardBgHover },
-                Size = new Size(46, 40),
-                Dock = DockStyle.Right,
-                Cursor = Cursors.Hand
-            };
-            settingsBtn.Click += (s, e) => new SettingsDialog().ShowDialog(this);
-            titleBar.Controls.Add(settingsBtn);
+            closeBtn.Click += (s, e) => Application.Exit();
+            titleBar.Controls.Add(closeBtn);
 
             // Drag Move Logic
             bool dragging = false;
