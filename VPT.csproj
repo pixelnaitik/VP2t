@@ -1,0 +1,64 @@
+﻿<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <!-- App basics -->
+    <OutputType>WinExe</OutputType>
+    <TargetFramework>net8.0-windows</TargetFramework>
+    <UseWindowsForms>true</UseWindowsForms>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <EnableWindowsTargeting>true</EnableWindowsTargeting>
+
+    <!-- App icon (relative to project root) -->
+    <ApplicationIcon>Assets\AppIcon.ico</ApplicationIcon>
+
+    <!-- Portable single-file EXE (no .NET install needed) -->
+    <SelfContained>true</SelfContained>
+    <PublishSingleFile>true</PublishSingleFile>
+    <RuntimeIdentifier>win-x64</RuntimeIdentifier>
+    <PublishTrimmed>false</PublishTrimmed>
+
+    <!-- Keep native libs INSIDE the single file (avoid loose *_cor3.dll files) -->
+    <IncludeAllContentForSelfExtract>false</IncludeAllContentForSelfExtract>
+    <IncludeNativeLibrariesForSelfExtract>false</IncludeNativeLibrariesForSelfExtract>
+    <EnableCompressionInSingleFile>true</EnableCompressionInSingleFile>
+
+    <!-- Deterministic, optimized Release build with embedded PDBs -->
+    <Deterministic>true</Deterministic>
+    <Optimize>true</Optimize>
+    <DebugType>embedded</DebugType>
+
+    <!-- Always drop published output here -->
+    <PublishDir>$(MSBuildProjectDirectory)\publish\</PublishDir>
+  </PropertyGroup>
+
+  <!-- Clean the publish folder before each publish -->
+  <Target Name="CleanPublishFolder" BeforeTargets="Publish">
+    <RemoveDir Directories="$(PublishDir)" />
+    <MakeDir   Directories="$(PublishDir)" />
+  </Target>
+
+  <!-- FFmpeg executables bundled -->
+  <ItemGroup>
+    <Content Include="ThirdParty\bin\**">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </Content>
+  </ItemGroup>
+
+  <!-- Embed all PNG icons that live directly under VPT\Assets -->
+  <ItemGroup>
+    <EmbeddedResource Include="Assets\*.png" />
+  </ItemGroup>
+
+  <!-- Also copy Assets to output directory for development/debug runs -->
+  <ItemGroup>
+    <Content Include="Assets\*.png">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </Content>
+  </ItemGroup>
+
+  <!-- Keep the raw ICO so the compiler can use it for the exe icon -->
+  <ItemGroup>
+    <None Include="Assets\AppIcon.ico" />
+  </ItemGroup>
+
+</Project>
